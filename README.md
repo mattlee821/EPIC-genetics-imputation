@@ -229,6 +229,34 @@ Stage-level summary files are written directly into `studies/`:
 - `studies/stage3-summary.md`
 - `studies/<STAGE>-pipeline_info/` — Nextflow trace and execution report for each stage
 
+### Strand and allele alignment
+
+The finalised data carry **no residual per-variant strand ambiguity**. Strand is
+resolved twice upstream: Stage 1 determines each array SNP's strand from the array
+manifest and flips it to a consistent orientation before lifting over, and Stage 2
+conforms every study to the 1000 Genomes GRCh38 reference panel before phasing and
+imputation. As a result, **all variants and alleles are reported on the forward (+)
+strand of GRCh38, with REF/ALT defined relative to the 1000 Genomes reference panel.**
+
+When using these data in a GWAS, describe the strand accordingly — e.g.:
+
+> Genotypes were harmonised to the GRCh38 forward strand during pre-imputation QC and
+> imputed against the 1000 Genomes GRCh38 reference panel (SHAPEIT5 phasing, Minimac4
+> imputation). All variants and effect estimates are reported on the forward strand of
+> GRCh38, with alleles defined relative to the reference panel.
+
+Because every variant sits on a single, unambiguous reference, palindromic (A/T, C/G)
+SNPs are not a problem *within* this dataset. They only become ambiguous when aligning
+to an **external** dataset of unknown strand (meta-analysis, cross-cohort merging, or
+PRS with external weights). To keep that alignment safe:
+
+- publish summary statistics with the **effect allele, other allele, and effect-allele
+  frequency (EAF)** — the EAF is what lets consumers realign palindromic SNPs;
+- apply the palindromic exclusion (drop A/T and C/G SNPs with MAF > ~0.4, where allele
+  frequency cannot resolve a strand flip) only **at the point of external harmonisation**,
+  not to the base data, since a same-panel or within-cohort analysis loses nothing by
+  keeping them.
+
 ## How To Run 
 
 ### 0: `.env` and `tools/`
