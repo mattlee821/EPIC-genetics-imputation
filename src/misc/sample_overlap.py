@@ -38,26 +38,60 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Stage 1 appends _R.. / _QC.. suffixes to replicate/QC sample IIDs. Stripping
-# them yields the participant's EPIC Idepic_Bio ID, so a replicate genotyped in
-# one study and the plain sample in another are recognised as the same person.
+# Stage 1 appends _R.. / _QC.. suffixes to replicate/QC sample IIDs.
 SUFFIX_RE = re.compile(r"(_R[0-9]+|_QC[0-9]*)$")
+
+
+class IdResolver:
+    """Resolve a psam IID to its EPIC Idepic_Bio (participant) key.
+
+    The genotype IID is a composite ``<Idepic>_<Idepic_Bio>`` for most samples and
+    a single ``<Idepic_Bio>`` for others, so the same person can appear in two
+    forms across studies. Resolving both to the Idepic_Bio unifies them. With a
+    map (from the ``genetics_id.sas7bdat`` export) the resolution is authoritative;
+    without one it parses the composite (second half = Idepic_Bio), which is
+    correct for the standard fixed-width EPIC ID format. Either way, composite and
+    single-field forms of the same participant are unified.
+    """
+
+    def __init__(self, id_map_path: Path | None):
+        self.comp: dict[str, str] = {}
+        self.by_bio: dict[str, str] = {}
+        self.by_idp: dict[str, str] = {}
+        if id_map_path is not None:
+            with Path(id_map_path).open() as fh:
+                reader = csv.DictReader(fh, delimiter="\t")
+                if not reader.fieldnames or "Idepic" not in reader.fieldnames or "Idepic_Bio" not in reader.fieldnames:
+                    raise SystemExit(f"{id_map_path}: expected 'Idepic' and 'Idepic_Bio' columns")
+                for row in reader:
+                    a, b = row["Idepic"].strip(), row["Idepic_Bio"].strip()
+                    self.comp[f"{a}_{b}"] = b
+                    self.by_bio[b] = b
+                    self.by_idp[a] = b
+
+    def to_participant(self, iid: str) -> str:
+        key = SUFFIX_RE.sub("", iid)
+        for lookup in (self.comp, self.by_bio, self.by_idp):
+            if key in lookup:
+                return lookup[key]
+        if len(key) == 29 and key[14] == "_":  # unmatched composite: take Idepic_Bio half
+            return key[15:]
+        return key
 
 
 # ---------------------------------------------------------------------------
 # I/O helpers
 # ---------------------------------------------------------------------------
 
-def read_psam_ids(path: Path) -> set[str]:
+def read_psam_ids(path: Path, resolver: IdResolver) -> set[str]:
     """Return the set of participant IDs (Idepic_Bio) from a PLINK2 .psam file.
 
     PLINK2 .psam format has a header line that begins with either:
       '#IID'  — no family ID column; the first column is the sample ID.
       '#FID'  — family ID is col 0, sample ID is col 1 (IID).
 
-    The IID is stripped of the Stage 1 _R.. / _QC.. replicate/QC suffixes so that
-    a participant is counted once even if genotyped as a replicate, and the same
-    participant is matched across studies.
+    Each IID is resolved to its authoritative Idepic_Bio so a participant is
+    counted once across replicate suffixes and composite/single-field IID forms.
     """
     ids: set[str] = set()
     with path.open() as fh:
@@ -77,7 +111,7 @@ def read_psam_ids(path: Path) -> set[str]:
                 continue
             parts = line.split("\t")
             if len(parts) > iid_col:
-                ids.add(SUFFIX_RE.sub("", parts[iid_col]))
+                ids.add(resolver.to_participant(parts[iid_col]))
     return ids
 
 
@@ -98,10 +132,10 @@ def discover_psam_files(analysis_root: Path) -> dict[str, Path]:
 # Matrix construction
 # ---------------------------------------------------------------------------
 
-def build_study_samples(psam_files: dict[str, Path]) -> dict[str, set[str]]:
+def build_study_samples(psam_files: dict[str, Path], resolver: IdResolver) -> dict[str, set[str]]:
     study_samples: dict[str, set[str]] = {}
     for study, path in psam_files.items():
-        ids = read_psam_ids(path)
+        ids = read_psam_ids(path, resolver)
         if ids:
             study_samples[study] = ids
         else:
@@ -406,6 +440,16 @@ def parse_args() -> argparse.Namespace:
         default=25,
         help="Maximum number of multi-study intersections to show (default: 25).",
     )
+    parser.add_argument(
+        "--id-map",
+        default=None,
+        help=(
+            "TSV with Idepic and Idepic_Bio columns (exported by 003-data-epic.R). "
+            "Resolves each IID to its authoritative Idepic_Bio so composite and "
+            "single-field forms of the same person are unified. Without it, counts "
+            "over-count unique participants and under-count overlaps."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -426,7 +470,18 @@ def main() -> None:
         )
     print(f"Found {len(psam_files)} studies with Stage 3 final .psam files.")
 
-    study_samples = build_study_samples(psam_files)
+    if args.id_map:
+        resolver = IdResolver(Path(args.id_map).resolve())
+    else:
+        resolver = IdResolver(None)
+        print(
+            "NOTE: no --id-map given; resolving Idepic_Bio by parsing the composite "
+            "IID (correct for the standard fixed-width EPIC ID format). Pass "
+            "--id-map for an authoritative, source-validated resolution.",
+            file=sys.stderr,
+        )
+
+    study_samples = build_study_samples(psam_files, resolver)
     studies = sorted(study_samples.keys(), key=str.lower)
 
     matrix = overlap_matrix(studies, study_samples)
