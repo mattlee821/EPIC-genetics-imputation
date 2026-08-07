@@ -456,6 +456,21 @@ main <- function() {
   # conflict.
   assert_columns(id_raw, c("Country", "Center", "Idepic", opts$id_column, study_map$id_col), "genetics_id.sas7bdat")
   assert_columns(sex_raw, c(opts$id_column, "Sex"), "genetics.sas7bdat")
+
+  # ── Idepic <-> Idepic_Bio map (authoritative EPIC IDs) ──────────────────────
+  # Stage 4 SAMPLE_MANIFEST joins the finalised genotype sample IIDs to this map
+  # to populate the manifest's Idepic and Idepic_Bio columns. The genotype IID is
+  # a composite <Idepic>_<Idepic_Bio> for most samples and a single <Idepic_Bio>
+  # for others, so string-parsing cannot always recover both IDs; this map does.
+  idepic_map <- unique(data.frame(
+    Idepic     = trimws(as_clean_character(id_raw$Idepic)),
+    Idepic_Bio = trimws(as_clean_character(id_raw[[opts$id_column]])),
+    stringsAsFactors = FALSE
+  ))
+  idepic_map <- idepic_map[idepic_map$Idepic != "" & idepic_map$Idepic_Bio != "", , drop = FALSE]
+  idepic_map_path <- file.path(dirname(output), "EPIC_Idepic_map.tsv")
+  write.table(idepic_map, idepic_map_path, sep = "\t", quote = FALSE, row.names = FALSE)
+  message("Wrote Idepic<->Idepic_Bio map (", nrow(idepic_map), " rows) to: ", idepic_map_path)
   assert_columns(caco_raw, c(opts$id_column, "Proj_Acronym", unique(study_map$caco_col)), "genetics_caco.sas7bdat")
   # ── Sanity diagnostic: how Country codes compare as strings ────────────────
   # Confirms that the excluded codes ("6", "8", "B") match the actual values in

@@ -11,6 +11,7 @@ process SAMPLE_MANIFEST {
     script:
     """
     \$PYTHON3_BIN "${params.project_root}/pipeline_stage4/bin/build_sample_manifest.py" \\
+      --id-map "${params.idepic_map}" \\
       --out sample-manifest.tsv \\
       ${psams}
     """

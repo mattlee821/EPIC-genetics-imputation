@@ -175,7 +175,7 @@ Stage 4 assembles the outputs from all preceding stages into a single deliverabl
 
 - `MASTER_REPORT` reads the stage 2 and stage 3 report trees from `analysis_root` and writes a single master HTML per study
 - `FINALISE_STUDY` collects the per-chromosome PGEN files from `stage3/final/`, the QC exclude lists from `stage3/report/flags/`, and the stage 2 and stage 3 HTML reports, then packages them into a deliverable tarball under `final/<STUDY>/`
-- `SAMPLE_MANIFEST` reads the finalised per-study `.psam` files and writes a single `final/sample-manifest.tsv` — a shareable index of which samples exist in the genetics data (see [Sample manifest](#sample-manifest) below for the columns and usage)
+- `SAMPLE_MANIFEST` reads the finalised per-study `.psam` files, joins their sample IIDs to the `Idepic`/`Idepic_Bio` map that `003-data-epic.R` exports from `genetics_id.sas7bdat`, and writes a single `final/sample-manifest.tsv` — a shareable index of which samples exist in the genetics data (see [Sample manifest](#sample-manifest) below for the columns and usage)
 
 #### Data used:
 
@@ -221,7 +221,7 @@ ${SCRATCH}/${SCRATCH_DATE}/
     │   ├── report-stage3.html
     │   ├── report-master.html
     │   └── review/                   # het, relatedness, and PCA files
-    ├── sample-manifest.tsv           # all samples: study, IID, Idepic_Bio, sex, pheno, overlap_keep
+    ├── sample-manifest.tsv           # all samples: study, IID, Idepic, Idepic_Bio, sex, pheno, overlap_keep
     └── summaries/                    # stage1/2/3 summary markdown files
 ```
 
@@ -270,11 +270,16 @@ their own analysis. It contains sample identifiers only; no genotypes.
 | column | meaning |
 |---|---|
 | `study` | study the sample belongs to (e.g. `Brea_02`) |
-| `IID` | sample ID **exactly as stored in that study's PLINK2 files** — use this to subset genotypes |
-| `Idepic_Bio` | EPIC participant ID: the `IID` with the Stage 1 `_R..`/`_QC..` replicate/QC suffixes removed. **This is the key to match against EPIC source data** (the `Idepic_Bio` column in `genetics_id.sas7bdat`). The same participant has the same `Idepic_Bio` across studies |
+| `IID` | sample ID **exactly as stored in that study's PLINK2 files** — use this to subset genotypes. It is a composite `<Idepic>_<Idepic_Bio>` (or a single `<Idepic_Bio>`) |
+| `Idepic` | EPIC participant (person) ID, from `genetics_id.sas7bdat` |
+| `Idepic_Bio` | EPIC biosample ID, from `genetics_id.sas7bdat`. **This is the key to match against EPIC source data**; the same participant has the same `Idepic_Bio` across studies |
 | `sex` | PLINK sex code: `1` = male, `2` = female, `0`/`NA` = unknown |
 | `pheno` | PLINK phenotype as stored: `1` = control, `2` = case, `NA` = missing |
-| `overlap_keep` | de-duplication flag for participants genotyped in **more than one study**: `TRUE` = keep this copy (the study with the smallest total N), `FALSE` = drop this copy (duplicate held in a larger study), `NA` = participant is in this one study only. Keeping `TRUE` + `NA` yields exactly one genetics sample per participant |
+| `overlap_keep` | de-duplication flag for participants genotyped in **more than one study**: `TRUE` = keep this copy (the study with the smallest total N), `FALSE` = drop this copy (duplicate held in a larger study), `NA` = participant is in this one study only. Keyed on `Idepic_Bio`; keeping `TRUE` + `NA` yields exactly one genetics sample per participant |
+
+Both `Idepic` and `Idepic_Bio` are looked up from `genetics_id.sas7bdat` (via the map
+`003-data-epic.R` writes), not parsed from the `IID`, so they are authoritative even for
+samples whose `IID` stores only the `Idepic_Bio`.
 
 #### Checking overlap with your study
 
@@ -497,7 +502,7 @@ sbatch src/006_stage3.sh --exclude-related --exclude-ancestry-outliers
 
 *N and Variants reflect the Stage 3 final dataset after R²/MAF/HWE variant filtering and sex/relatedness/heterozygosity/ancestry sample QC. Imputation metrics are from Stage 2. Per-study details are in the master reports under `report/`.*
 
-**Total unique participants across all 23 studies: 48,212** (60,624 total sample-study pairs; 7,916 participants appear in two or more studies).
+**Total unique participants across all 23 studies: 46,350** (60,624 total sample-study pairs; 9,578 participants appear in two or more studies). Counts are by EPIC `Idepic_Bio`, so a participant genotyped in several studies — including where the sample ID is stored in different forms across studies — is counted once.
 
 ### Sample Overlap
 
