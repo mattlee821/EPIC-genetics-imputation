@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -37,17 +38,26 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# Stage 1 appends _R.. / _QC.. suffixes to replicate/QC sample IIDs. Stripping
+# them yields the participant's EPIC Idepic_Bio ID, so a replicate genotyped in
+# one study and the plain sample in another are recognised as the same person.
+SUFFIX_RE = re.compile(r"(_R[0-9]+|_QC[0-9]*)$")
+
 
 # ---------------------------------------------------------------------------
 # I/O helpers
 # ---------------------------------------------------------------------------
 
 def read_psam_ids(path: Path) -> set[str]:
-    """Return the set of IIDs from a PLINK2 .psam file.
+    """Return the set of participant IDs (Idepic_Bio) from a PLINK2 .psam file.
 
     PLINK2 .psam format has a header line that begins with either:
       '#IID'  — no family ID column; the first column is the sample ID.
       '#FID'  — family ID is col 0, sample ID is col 1 (IID).
+
+    The IID is stripped of the Stage 1 _R.. / _QC.. replicate/QC suffixes so that
+    a participant is counted once even if genotyped as a replicate, and the same
+    participant is matched across studies.
     """
     ids: set[str] = set()
     with path.open() as fh:
@@ -67,7 +77,7 @@ def read_psam_ids(path: Path) -> set[str]:
                 continue
             parts = line.split("\t")
             if len(parts) > iid_col:
-                ids.add(parts[iid_col])
+                ids.add(SUFFIX_RE.sub("", parts[iid_col]))
     return ids
 
 
@@ -154,9 +164,9 @@ def write_membership_tsv(
 ) -> None:
     with path.open("w", newline="") as fh:
         writer = csv.writer(fh, delimiter="\t")
-        writer.writerow(["IID", "N_Studies", "Studies"])
-        for iid, studies in sorted(shared.items()):
-            writer.writerow([iid, len(studies), ",".join(studies)])
+        writer.writerow(["Idepic_Bio", "N_Studies", "Studies"])
+        for participant, studies in sorted(shared.items()):
+            writer.writerow([participant, len(studies), ",".join(studies)])
     print(f"Multi-study membership written to: {path}")
 
 
