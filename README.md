@@ -163,17 +163,19 @@ Stage 3 turns the chromosome-level imputed VCFs from stage 2 into analysis-ready
 - Primary output: `final/<STUDY>/` with archive, master HTML, and QC review files
 - Submission script: `src/007_stage4.sh`
 
-Stage 4 assembles the outputs from all preceding stages into a single deliverable per study. It runs two processes:
+Stage 4 assembles the outputs from all preceding stages into a single deliverable per study. It runs three processes:
 
 #### What this stage does:
 
 1. generate a cross-stage master HTML report integrating stage 2 and stage 3 QC summaries
 2. build a per-study archive containing the finalized PLINK2 files, QC exclude lists, and all reports
+3. write a combined `sample-manifest.tsv` listing every sample across all studies
 
 #### How:
 
 - `MASTER_REPORT` reads the stage 2 and stage 3 report trees from `analysis_root` and writes a single master HTML per study
 - `FINALISE_STUDY` collects the per-chromosome PGEN files from `stage3/final/`, the QC exclude lists from `stage3/report/flags/`, and the stage 2 and stage 3 HTML reports, then packages them into a deliverable tarball under `final/<STUDY>/`
+- `SAMPLE_MANIFEST` reads the finalised per-study `.psam` files and writes a single `final/sample-manifest.tsv` — a shareable index of which samples exist in the genetics data (see [Sample manifest](#sample-manifest) below for the columns and usage)
 
 #### Data used:
 
@@ -219,6 +221,7 @@ ${SCRATCH}/${SCRATCH_DATE}/
     │   ├── report-stage3.html
     │   ├── report-master.html
     │   └── review/                   # het, relatedness, and PCA files
+    ├── sample-manifest.tsv           # all samples: study, IID, Idepic_Bio, sex, pheno, overlap_keep
     └── summaries/                    # stage1/2/3 summary markdown files
 ```
 
@@ -256,6 +259,83 @@ PRS with external weights). To keep that alignment safe:
   frequency cannot resolve a strand flip) only **at the point of external harmonisation**,
   not to the base data, since a same-panel or within-cohort analysis loses nothing by
   keeping them.
+
+### Sample manifest
+
+`final/sample-manifest.tsv` is a single tab-separated index of every sample in the
+finalised genetics data — one row per (study, sample) — for sharing with collaborators
+so they can see which of their participants have genetics data and build a keep-list for
+their own analysis. It contains sample identifiers only; no genotypes.
+
+| column | meaning |
+|---|---|
+| `study` | study the sample belongs to (e.g. `Brea_02`) |
+| `IID` | sample ID **exactly as stored in that study's PLINK2 files** — use this to subset genotypes |
+| `Idepic_Bio` | EPIC participant ID: the `IID` with the Stage 1 `_R..`/`_QC..` replicate/QC suffixes removed. **This is the key to match against EPIC source data** (the `Idepic_Bio` column in `genetics_id.sas7bdat`). The same participant has the same `Idepic_Bio` across studies |
+| `sex` | PLINK sex code: `1` = male, `2` = female, `0`/`NA` = unknown |
+| `pheno` | PLINK phenotype as stored: `1` = control, `2` = case, `NA` = missing |
+| `overlap_keep` | de-duplication flag for participants genotyped in **more than one study**: `TRUE` = keep this copy (the study with the smallest total N), `FALSE` = drop this copy (duplicate held in a larger study), `NA` = participant is in this one study only. Keeping `TRUE` + `NA` yields exactly one genetics sample per participant |
+
+#### Checking overlap with your study
+
+You have a list of your study's participants as EPIC `Idepic_Bio` IDs (one per line in
+`my_participants.txt`). Match them against the manifest:
+
+```r
+library(data.table)
+
+manifest <- fread("sample-manifest.tsv", na.strings = "")           # keep 'NA' text literal
+mine     <- fread("my_participants.txt", header = FALSE)$V1          # your Idepic_Bio IDs
+
+overlap <- manifest[Idepic_Bio %in% mine]
+overlap[, .N, by = study][order(-N)]        # how many of your participants per genetics study
+uniqueN(overlap$Idepic_Bio)                 # your participants that have genetics data
+```
+
+#### Building a `samples-keep.tsv`
+
+To use the genetics data for your participants, take the overlap and drop cross-study
+duplicates (keep each participant once, in the smallest study), giving the exact samples
+to extract:
+
+```r
+# keep one genetics sample per participant: TRUE (kept copy) + NA (single-study),
+# dropping FALSE (the duplicate copy held in a larger study)
+keep <- overlap[overlap_keep != "FALSE"]
+
+fwrite(keep[, .(study, IID)], "samples-keep.tsv", sep = "\t")
+```
+
+(If you instead want *every* genetics sample for your participants, replicates and all,
+skip the `overlap_keep` filter and use `overlap` directly.)
+
+#### Using `samples-keep.tsv` with the genetics data
+
+The finalised genotypes are per study (`<STUDY>/<STUDY>_chr*.pgen|pvar|psam`). Subset
+each study's PLINK2 files to your kept samples with `plink2 --keep`, matching on `IID`:
+
+```bash
+# samples-keep.tsv columns: study<TAB>IID
+FINAL=/data/Epic/subprojects/Depot_Genetics/sources/finalised_data   # extracted <STUDY>/ pfiles
+OUT=./mystudy_genetics; mkdir -p "$OUT"
+
+for study in $(tail -n +2 samples-keep.tsv | cut -f1 | sort -u); do
+  # plink2 --keep list: one IID per line under a '#IID' header
+  { echo "#IID"; awk -F'\t' -v s="$study" 'NR>1 && $1==s {print $2}' samples-keep.tsv; } > "$OUT/$study.keep"
+
+  for pgen in "$FINAL/$study/${study}"_chr*.pgen; do
+    prefix="${pgen%.pgen}"
+    plink2 --pfile "$prefix" \
+           --keep "$OUT/$study.keep" \
+           --make-pgen \
+           --out "$OUT/$(basename "$prefix").mystudy"
+  done
+done
+```
+
+This writes per-study, per-chromosome PLINK2 files containing only your participants,
+de-duplicated across studies. From there you can merge across studies/chromosomes as your
+analysis requires (e.g. `plink2 --pmerge-list`).
 
 ## How To Run 
 

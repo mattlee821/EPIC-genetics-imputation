@@ -1,8 +1,9 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl = 2
 
-include { MASTER_REPORT  } from './modules/report.nf'
-include { FINALISE_STUDY } from './modules/finalise.nf'
+include { MASTER_REPORT   } from './modules/report.nf'
+include { FINALISE_STUDY  } from './modules/finalise.nf'
+include { SAMPLE_MANIFEST } from './modules/manifest.nf'
 
 workflow {
 
@@ -21,9 +22,15 @@ workflow {
         .groupTuple()
 
     // All per-chr psams are identical; chr1 is the canonical representative.
-    ch_psam = Channel.fromPath("${params.stage3_root}/*/stage3/final/*_chr1.psam")
+    // One branch feeds FINALISE_STUDY (per study), the other the combined manifest.
+    Channel.fromPath("${params.stage3_root}/*/stage3/final/*_chr1.psam")
         .map { f -> tuple(f.parent.parent.parent.name, f) }
         .filter { study, f -> params.study == 'all' || included_studies.contains(study) }
+        .multiMap { study, psam ->
+            for_finalise: tuple(study, psam)
+            for_manifest: psam
+        }
+        .set { ch_psam_split }
 
     // ── QC outputs from stage 3 SAMPLE_REVIEW_SUMMARY and HET_PCA_QC/KING_QC ───
     // Exclude files: ${study}/stage3/report/flags/
@@ -77,7 +84,7 @@ workflow {
     // ── FINALISE_STUDY: build deliverable archive + copy HTML + review files ─────
     ch_finalise_input = ch_pgens
         .join(ch_pvars)
-        .join(ch_psam)
+        .join(ch_psam_split.for_finalise)
         .join(ch_related)
         .join(ch_ancestry)
         .join(ch_hwe)
@@ -89,4 +96,7 @@ workflow {
         .join(ch_eigenval)
 
     FINALISE_STUDY(ch_finalise_input)
+
+    // ── SAMPLE_MANIFEST: combined study/IID/sex/pheno table for collaborators ────
+    SAMPLE_MANIFEST(ch_psam_split.for_manifest.collect())
 }
